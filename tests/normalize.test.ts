@@ -13,8 +13,8 @@ test("normalize lowercases, trims, and collapses internal whitespace", () => {
 test("prefixUpperBound is the smallest string greater than all strings with the prefix", () => {
   assert.equal(prefixUpperBound("iph"), "ipi");
   assert.equal(prefixUpperBound("a"), "b");
-  // a real query with the prefix sorts inside [prefix, upperBound)
+
   assert.ok("iphone" >= "iph" && "iphone" < prefixUpperBound("iph"));
-  // the boundary itself is excluded
+
   assert.ok(!("ipi" < prefixUpperBound("iph")));
 });

@@ -17,7 +17,7 @@ test("cache-aside: miss computes from DB (sorted by count), hit serves from cach
   const r1 = await svc.suggest("iphone");
   assert.equal(r1.cache, "miss");
   assert.equal(r1.suggestions.length, 3);
-  assert.equal(r1.suggestions[0].query, "iphone 15"); // highest count first
+  assert.equal(r1.suggestions[0].query, "iphone 15");
   assert.equal(r1.suggestions[1].query, "iphone charger");
 
   const r2 = await svc.suggest("iphone");
@@ -69,6 +69,6 @@ test("fail-open: a cache error still returns DB results (no cascade)", async () 
   }
   const svc = new SuggestService(makeDb(seed), new DistributedCache([new ThrowingNode()]));
   const r = await svc.suggest("iphone");
-  assert.equal(r.cache, "miss"); // fell back to DB instead of throwing
+  assert.equal(r.cache, "miss");
   assert.equal(r.suggestions[0].query, "iphone 15");
 });

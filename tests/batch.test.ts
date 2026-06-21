@@ -14,7 +14,6 @@ test("buffers + aggregates repeats; flush writes once per unique query (write re
   for (let i = 0; i < 5; i++) bw.record("iphone 15");
   bw.record("brand new gadget");
 
-  // Before flush: nothing written yet (eventual consistency).
   assert.equal((db.prepare("SELECT count FROM queries WHERE query='iphone 15'").get() as Row).count, 200);
 
   await bw.flush("manual");
@@ -24,7 +23,7 @@ test("buffers + aggregates repeats; flush writes once per unique query (write re
   assert.equal(stats.totalDbWrites, 2, "6 events should collapse to 2 unique upserts");
 
   assert.equal((db.prepare("SELECT count FROM queries WHERE query='iphone 15'").get() as Row).count, 205);
-  // New query inserted with initial count = number of times searched.
+
   assert.equal(
     (db.prepare("SELECT count FROM queries WHERE query='brand new gadget'").get() as Row).count,
     1

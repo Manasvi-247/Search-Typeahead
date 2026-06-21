@@ -1,4 +1,3 @@
-// Lookahead dashboard — vanilla JS, talks to the typeahead API on the same origin.
 const $ = (id) => document.getElementById(id);
 const api = async (path, opts) => {
   const r = await fetch(path, opts);
@@ -11,8 +10,6 @@ const post = (path, body) =>
 const fmt = (n) => (n >= 1000 ? (n / 1000 >= 100 ? Math.round(n / 1000) : +(n / 1000).toFixed(1)) + "k" : "" + n);
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-// Product titles are really long descriptions. Show only the leading "name": cut at the first
-// separator (" - ", ",", " | ") and cap the length. The real query is kept for searching.
 function shortName(s) {
   let cut = s.length;
   for (const sep of [" - ", " – ", " — ", " | ", ", "]) {
@@ -28,7 +25,7 @@ const NODE_COLORS = ["#4d8fc4", "#957fef", "#f46197", "#34b89a", "#e3c567"];
 
 const state = {
   query: "",
-  rank: "count", // 'count' | 'recent'
+  rank: "count",
   suggestions: [],
   deltaMap: {},
   activeIndex: -1,
@@ -40,9 +37,6 @@ const state = {
   reqSeq: 0,
 };
 
-/* ---------------- Local search history (client-side personalization, doc2:775-784) ----------------
- * The browser keeps the user's own searches in localStorage and merges matching ones ABOVE the
- * global suggestions — "the future" / personalization layer the notes describe. */
 const HISTORY_KEY = "lookahead-history";
 const HISTORY_MAX = 50;
 const getHistory = () => {
@@ -73,7 +67,6 @@ const historyMatches = (prefix) => {
     .map((h) => h.q);
 };
 
-// Merge the user's matching recent searches (personalized, on top) with the global list, ≤10.
 function mergeWithHistory(prefix, global) {
   const seen = new Set();
   const out = [];
@@ -95,7 +88,6 @@ function mergeWithHistory(prefix, global) {
   return out;
 }
 
-/* ---------------- Search + dropdown ---------------- */
 const input = $("searchInput");
 let debounceT, respT;
 
@@ -110,7 +102,7 @@ input.addEventListener("focus", () => {
   const v = input.value.trim();
   if (!v) renderRecent();
   else if (state.suggestions.length) renderDropdown();
-  else runQuery(input.value); // re-query rather than show a stale/empty list
+  else runQuery(input.value);
 });
 input.addEventListener("blur", () => setTimeout(hideDropdowns, 150));
 $("searchBtn").addEventListener("click", () => submit());
@@ -131,7 +123,7 @@ async function runQuery(raw) {
   if (!prefix) {
     state.suggestions = [];
     $("searching").classList.remove("show");
-    renderRecent(); // empty box → show the user's recent searches
+    renderRecent();
     state.ringOwner = null;
     state.ringKey = null;
     renderRing();
@@ -143,15 +135,14 @@ async function runQuery(raw) {
     const otherP = state.rank === "recent" ? api(`/suggest?q=${encodeURIComponent(prefix)}&rank=count`) : null;
     const primary = await primaryP;
     const other = otherP ? await otherP : null;
-    if (seq !== state.reqSeq) return; // a newer keystroke superseded this one
+    if (seq !== state.reqSeq) return;
 
     $("searching").classList.remove("show");
-    state.suggestions = mergeWithHistory(prefix, primary.suggestions); // personalize
+    state.suggestions = mergeWithHistory(prefix, primary.suggestions);
     state.meta = primary;
     state.activeIndex = -1;
     recordLatency(primary.latencyMs, primary.cache);
 
-    // delta arrows: how far each result rose vs the all-time order
     state.deltaMap = {};
     if (other) {
       const allIdx = {};
@@ -181,7 +172,7 @@ function renderDropdown() {
   const m = state.meta || {};
   $("dropNode").textContent = m.node || "—";
   const badge = $("dropBadge");
-  badge.style.background = ""; // clear any inline style left by the recent-searches view
+  badge.style.background = "";
   badge.style.color = "";
   const hit = m.cache === "hit";
   badge.textContent = hit ? "CACHE HIT" : "STORE READ";
@@ -192,7 +183,7 @@ function renderDropdown() {
   $("dropList").innerHTML = items
     .map((it, i) => {
       const name = shortName(it.query);
-      const k = Math.min(pl, name.length); // highlight only the typed prefix portion
+      const k = Math.min(pl, name.length);
       const pre = esc(name.slice(0, k));
       const rest = esc(name.slice(k));
       const delta = state.deltaMap[it.query] ? `<span class="delta">${state.deltaMap[it.query]}</span>` : "";
@@ -240,7 +231,6 @@ function hideDropdowns() {
   $("emptyState").classList.add("hidden");
 }
 
-// Recent-searches view, shown when the box is focused but empty (client-side history).
 function renderRecent() {
   const hist = getHistory();
   $("emptyState").classList.add("hidden");
@@ -305,24 +295,23 @@ function onKey(e) {
 async function submit(q) {
   const query = (q != null ? q : input.value).trim();
   if (!query) return;
-  clearTimeout(debounceT); // cancel any pending re-query from earlier typing
-  input.value = shortName(query); // show the clean name; we still search the full query
+  clearTimeout(debounceT);
+  input.value = shortName(query);
   state.query = query;
   clearDropdown();
   try {
     const r = await post("/search", { query });
-    addHistory(query); // remember it locally for personalized suggestions
+    addHistory(query);
     $("responseBody").textContent = `{ "message": "${r.message}", "query": "${esc(r.query)}" }`;
     $("responseCard").classList.remove("hidden");
     clearTimeout(respT);
     respT = setTimeout(() => $("responseCard").classList.add("hidden"), 3400);
-    refreshLivePanels(); // buffer / trending may have changed
+    refreshLivePanels();
   } catch (e) {
-    showEmpty("Search failed — server unreachable.");
+    showEmpty(`Search failed (${e.message}).`);
   }
 }
 
-/* ---------------- Latency panel ---------------- */
 function recordLatency(ms, cache) {
   if (typeof ms === "number") {
     state.lat.push(ms);
@@ -359,7 +348,6 @@ function recordLatency(ms, cache) {
   $("latArea").setAttribute("points", area);
 }
 
-/* ---------------- Hash ring ---------------- */
 async function updateRing(prefix) {
   try {
     const d = await api(`/cache/debug?prefix=${encodeURIComponent(prefix)}&rank=${state.rank}`);
@@ -408,7 +396,6 @@ function renderRing() {
   $("ringOwner").textContent = state.ringOwner || "—";
 }
 
-/* ---------------- Trending panel ---------------- */
 async function loadTrending() {
   try {
     const [recent, all] = await Promise.all([
@@ -444,7 +431,6 @@ async function loadTrending() {
   } catch {}
 }
 
-/* ---------------- Cache + batch + decay panels ---------------- */
 async function loadCache() {
   try {
     const d = await api("/cache/stats");
@@ -477,7 +463,7 @@ async function loadBatch() {
     const d = await api("/batch/stats");
     $("batchCfg").textContent = `flush ≥${d.batchSize} or ${d.flushIntervalSec}s`;
     $("batchBufCount").textContent = `${d.pendingEvents}/${d.batchSize}`;
-    // Cap the slot gauge so a large batch size doesn't overflow; fill is proportional.
+
     const shown = Math.min(d.batchSize, 24);
     const filled = d.batchSize ? Math.round((d.pendingEvents / d.batchSize) * shown) : 0;
     let slots = "";
@@ -510,7 +496,6 @@ function refreshLivePanels() {
   loadCache();
 }
 
-/* ---------------- Theme (persisted in localStorage) ---------------- */
 const MOON = `<svg width="14" height="14" viewBox="0 0 256 256" fill="#eaf3f0"><path d="M233.54,142.23a8,8,0,0,0-8-2,88.08,88.08,0,0,1-109.8-109.8,8,8,0,0,0-10-10,104.84,104.84,0,0,0-52.91,37A104,104,0,0,0,136,224a103.09,103.09,0,0,0,62.52-20.88,104.84,104.84,0,0,0,37-52.91A8,8,0,0,0,233.54,142.23Z"/></svg>`;
 const SUN = `<svg width="14" height="14" viewBox="0 0 256 256" fill="#1a2238"><path d="M120,40V16a8,8,0,0,1,16,0V40a8,8,0,0,1-16,0Zm72,88a64,64,0,1,1-64-64A64.07,64.07,0,0,1,192,128Zm-16,0a48,48,0,1,0-48,48A48.05,48.05,0,0,0,176,128ZM58.34,69.66A8,8,0,0,0,69.66,58.34l-16-16A8,8,0,0,0,42.34,53.66Zm0,116.68-16,16a8,8,0,0,0,11.32,11.32l16-16a8,8,0,0,0-11.32-11.32ZM192,72a8,8,0,0,0,5.66-2.34l16-16a8,8,0,0,0-11.32-11.32l-16,16A8,8,0,0,0,192,72Zm5.66,114.34a8,8,0,0,0-11.32,11.32l16,16a8,8,0,0,0,11.32-11.32ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Zm80,80a8,8,0,0,0-8,8v24a8,8,0,0,0,16,0V216A8,8,0,0,0,128,208Zm112-88H216a8,8,0,0,0,0,16h24a8,8,0,0,0,0-16Z"/></svg>`;
 function setTheme(theme) {
@@ -524,9 +509,8 @@ $("themeToggle").addEventListener("click", () =>
   setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark")
 );
 
-/* ---------------- Boot ---------------- */
-setTheme(localStorage.getItem("lookahead-theme") || "dark"); // restore saved theme + paint knob
-recordLatency(); // paints idle state
+setTheme(localStorage.getItem("lookahead-theme") || "dark");
+recordLatency();
 renderRing();
 refreshLivePanels();
 loadDecay();

@@ -2,12 +2,30 @@
 
 A search typeahead engine (HLD101 assignment): prefix suggestions sorted by popularity, a
 distributed Redis cache with **consistent hashing**, **batch writes**, and recency-aware
-**trending** - plus a live dashboard. Built on the instructor's "Approach 2" (a durable
-Search Frequency DB fronted by a distributed suggestion cache).
+**trending** - plus a live dashboard. A durable Search Frequency DB (SQLite) is fronted by a
+distributed suggestion cache (Redis) keyed by prefix.
 
 - **Backend:** Node 25 (runs TypeScript natively) · Fastify · built-in `node:sqlite` · Redis (ioredis)
 - **Frontend:** single-page dashboard (`web/`), served by the backend
 - **Docs:** [`REPORT.md`](./REPORT.md) (architecture, API, design trade-offs, performance) · [`docs/db/schema.dbml`](./docs/db/schema.dbml)
+
+## Architecture
+
+![Search Typeahead architecture](docs/db/image.png)
+
+## Screenshots
+
+The live dashboard (PNGs live in `docs/screenshots/`):
+
+| Dashboard overview | Typeahead dropdown — node · hit/miss · latency |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Suggestions](docs/screenshots/suggestions.png) |
+| Trending (recency ranking) | System internals — cache · batch · ring |
+| ![Trending](docs/screenshots/trending.png) | ![Internals](docs/screenshots/internals.png) |
+
+**Light theme** (persisted via localStorage):
+
+![Light theme](docs/screenshots/light.png)
 
 ---
 
@@ -171,7 +189,6 @@ scripts/         redis start/stop
 - Suggestions are **prefix matches on product titles** (typeahead semantics) - a query shows
   only if a title *starts with* what you typed.
 - Counts/cache are **server-side** (shared); only theme + recent searches live in the browser.
-- See [`REPORT.md` §8](./REPORT.md) for limitations & future work.
 
 ---
 

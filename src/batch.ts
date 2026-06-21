@@ -11,21 +11,6 @@ import {
   PREFIX_INVALIDATION_CAP,
 } from "./config.ts";
 
-/**
- * Batch writer (doc2:464-553).
- *
- * `record()` does NOT touch the DB — it just buffers the event in memory, aggregating
- * repeated queries (ass.txt:143). A flush (triggered by BATCH_SIZE events or a timer) then:
- *   1. writes one aggregated UPSERT per unique query to the Frequency DB, in a single
- *      transaction  -> this is the write reduction;
- *   2. invalidates the cached suggestion lists for the affected prefixes, so the next
- *      /suggest recomputes fresh (cache-aside form of the notes' update_prefixes).
- *
- * Crash trade-off (ass.txt:146): events buffered but not yet flushed are lost on a hard
- * crash -> counts off by a small amount, acceptable per the NFRs (doc1:305-308). A clean
- * shutdown flushes first. Mitigations in prod: shorter interval, or a write-ahead log.
- */
-
 interface Pending {
   display: string;
   delta: number;
@@ -33,14 +18,14 @@ interface Pending {
 
 export interface BatchStats {
   flushes: number;
-  totalEvents: number; // search events recorded (cumulative)
-  totalDbWrites: number; // aggregated upserts actually executed (cumulative)
+  totalEvents: number;
+  totalDbWrites: number;
   totalInvalidations: number;
-  pendingEvents: number; // currently buffered, not yet flushed
+  pendingEvents: number;
   pendingQueries: number;
-  pending: Array<{ q: string; n: number }>; // buffered queries + counts (for the UI)
-  writesSavedPct: number; // 1 - dbWrites/events, as a percentage
-  batchSize: number; // flush threshold (events)
+  pending: Array<{ q: string; n: number }>;
+  writesSavedPct: number;
+  batchSize: number;
   flushIntervalSec: number;
 }
 
@@ -65,8 +50,7 @@ export class BatchWriter {
     this.upsert = db.prepare(UPSERT_QUERY_SQL);
   }
 
-  /** Buffer one search. Aggregates repeats. No DB write here (that's the point). */
-  record(rawQuery: string): void {
+    record(rawQuery: string): void {
     const query = normalize(rawQuery);
     if (query === "") return;
     const existing = this.buffer.get(query);
@@ -87,34 +71,30 @@ export class BatchWriter {
     }
   }
 
-  /** Apply the buffer to the DB (one transaction) and invalidate affected prefixes. */
-  async flush(reason: "size" | "interval" | "shutdown" | "manual"): Promise<void> {
+    async flush(reason: "size" | "interval" | "shutdown" | "manual"): Promise<void> {
     if (this.flushing || this.buffer.size === 0) return;
     this.flushing = true;
-    // Snapshot + clear synchronously so concurrent record()s land in the next batch.
+
     const snapshot = this.buffer;
     const events = this.pendingEvents;
     this.buffer = new Map();
     this.pendingEvents = 0;
 
     try {
-      // (1) Batched, aggregated write to the Frequency DB — one upsert per unique query.
+
       this.db.exec("BEGIN");
       for (const [query, p] of snapshot) {
         this.upsert.run({ query, display: p.display, count: p.delta });
       }
       this.db.exec("COMMIT");
 
-      // (2) Invalidate the cached suggestion lists for every affected prefix.
-      // Build a DEDUPED key set (prefixes overlap across queries), then hand it to
-      // delMany, which issues one variadic DEL per node — not one DEL per key (N+1).
       const keys: Set<string> = new Set();
       for (const query of snapshot.keys()) {
         const cap = Math.min(query.length, PREFIX_INVALIDATION_CAP);
         for (let i = MIN_PREFIX; i <= cap; i++) {
           const prefix = query.slice(0, i);
-          if (prefix.endsWith(" ")) continue; // never a real normalized cache key
-          for (const rank of RANKS) keys.add(cacheKey(prefix, rank)); // both rankings stale
+          if (prefix.endsWith(" ")) continue;
+          for (const rank of RANKS) keys.add(cacheKey(prefix, rank));
         }
       }
       await this.cache.delMany([...keys]);

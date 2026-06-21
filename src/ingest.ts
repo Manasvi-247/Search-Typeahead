@@ -1,20 +1,3 @@
-/**
- * Dataset ingestion (Phase 1 / Milestone 1).
- *
- * Reads the Amazon Products 2023 CSV, keeps only rows with a usable popularity signal
- * (reviews > 0), samples it down to a demo-friendly size, and loads it into the
- * Search Frequency DB (SQLite) as `query -> count`.
- *
- *   query   = normalize(title)   (lowercased, trimmed, single-spaced)
- *   count   = reviews            (verified 75.7% non-zero, range 0..292,474)
- *
- * Duplicate normalized titles are aggregated (counts summed) — this is the
- * "derive counts by aggregation" allowance in the assignment (ass.txt:33).
- *
- * Config via env:
- *   CSV_PATH       path to amazon_products.csv      (default data/amazon_products.csv)
- *   SAMPLE_EVERY   keep 1 of every N qualifying rows (default 4 -> ~270k rows)
- */
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 import { parse } from "csv-parse";
@@ -35,24 +18,22 @@ async function main() {
 
   const db = openDb();
   initSchema(db);
-  db.exec("DELETE FROM queries;"); // fresh load each run, so re-running is deterministic
+  db.exec("DELETE FROM queries;");
 
-  // Seed score = count (shared UPSERT): at load time "recent" popularity equals all-time
-  // popularity; the two diverge once live searches + decay kick in.
   const upsert = db.prepare(UPSERT_QUERY_SQL);
 
   const parser = createReadStream(CSV_PATH).pipe(
     parse({
-      columns: true, // first row is the header -> records are objects
+      columns: true,
       relax_quotes: true,
       relax_column_count: true,
       skip_records_with_error: true,
     })
   );
 
-  let seen = 0; // total data rows read
-  let qualifying = 0; // rows with reviews > 0
-  let kept = 0; // rows passing the sample filter (before dedup)
+  let seen = 0;
+  let qualifying = 0;
+  let kept = 0;
 
   db.exec("BEGIN");
   for await (const row of parser) {
@@ -62,7 +43,7 @@ async function main() {
     if (!(reviews > 0) || title.trim() === "") continue;
 
     qualifying++;
-    if (qualifying % SAMPLE_EVERY !== 0) continue; // systematic (unbiased) sampling
+    if (qualifying % SAMPLE_EVERY !== 0) continue;
 
     const query = normalize(title);
     if (query === "") continue;

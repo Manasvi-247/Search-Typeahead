@@ -4,7 +4,7 @@
 **Author:** [Manasvi-247](https://github.com/Manasvi-247)
 **Stack:** Node 25 (native TypeScript) · Fastify · `node:sqlite` · Redis (ioredis) · vanilla-JS dashboard
 
-This report follows the instructor case-study notes (doc1 = *Case Study: Google Search Typeahead*, doc2 = *Typeahead-2*). It implements the notes' **Approach 2** ("prefix == TrieNode, data-augmentation == cache", doc2:91-101): a durable **Search Frequency DB** fronted by a **distributed suggestion cache**.
+This system serves popular search suggestions for a typed prefix at low latency. The design is a **two-store** model: a durable **Search Frequency DB** (SQLite) holds `query → count/score`, and a **distributed suggestion cache** (Redis, 3 nodes routed by consistent hashing) holds the top-k suggestions for each prefix. The cache key *is* the prefix — so the per-prefix top-k that an in-memory trie would precompute is instead stored as a distributed cache, keeping reads fast and the cache horizontally scalable.
 
 ---
 
@@ -52,24 +52,24 @@ This report follows the instructor case-study notes (doc1 = *Case Study: Google 
 | Component | File | Role |
 |---|---|---|
 | **Normalizer** | `src/normalize.ts` | One canonical `query` form (lowercase, trim, collapse spaces). Used identically at ingest + query time so prefixes line up. Handles mixed-case input. |
-| **Search Frequency DB** | `src/db.ts` | SQLite (`node:sqlite`). `queries(query PK, display, count, score)`. The durable primary store - counts only, not suggestion lists (doc2:108-113). |
+| **Search Frequency DB** | `src/db.ts` | SQLite (`node:sqlite`). `queries(query PK, display, count, score)`. The durable primary store - counts only, not suggestion lists. |
 | **Ingestion** | `src/ingest.ts` | Streams the dataset CSV → filter → aggregate → load. |
-| **Consistent-hash ring** | `src/ring.ts` | 2³² ring, 150 virtual nodes/node, md5 hash, clockwise lookup. Decides which cache node owns a prefix (doc2:422-431, ass.txt:110). |
-| **Distributed cache** | `src/cache.ts` | `DistributedCache` over 3 Redis nodes (`RedisCacheNode`) behind a `CacheNode` interface (swappable; `InMemoryCacheNode` for tests). The "Top Suggestions DB" (doc2:111). |
+| **Consistent-hash ring** | `src/ring.ts` | 2³² ring, 150 virtual nodes/node, md5 hash, clockwise lookup. Decides which cache node owns a prefix. |
+| **Distributed cache** | `src/cache.ts` | `DistributedCache` over 3 Redis nodes (`RedisCacheNode`) behind a `CacheNode` interface (swappable; `InMemoryCacheNode` for tests). The "Top Suggestions DB". |
 | **Suggestion serving** | `src/suggest.ts` | Cache-aside read path: ring → Redis → hit; miss → prefix range scan on SQLite → cache with TTL. Fail-open on cache errors. |
-| **Batch writer** | `src/batch.ts` | Buffers `/search` events, aggregates repeats, flushes to SQLite + invalidates affected prefixes (doc2:464-553). |
-| **Decayer** | `src/decay.ts` | Periodically multiplies every `score` by a factor (doc2:712-737) - turns all-time count into a recency-aware score. |
+| **Batch writer** | `src/batch.ts` | Buffers `/search` events, aggregates repeats, flushes to SQLite + invalidates affected prefixes. |
+| **Decayer** | `src/decay.ts` | Periodically multiplies every `score` by a factor - turns all-time count into a recency-aware score. |
 | **HTTP + static** | `src/server.ts` | Fastify routes + serves the dashboard (`web/`). |
 | **Dashboard** | `web/index.html`, `web/app.js` | The UI; talks to the API on the same origin. |
 
 ### 1.3 The two-store model (why)
 
-The notes show that a "DSA person" builds an augmented trie, but an "HLD person" realises the augmentation **is** a cache of `prefix → top-k`, and stores it separately (doc2:94-101). We follow that:
+The suggestions for a prefix are just the top-k matching queries. An in-memory augmented trie could precompute that, but the per-prefix top-k **is** exactly a cache keyed by prefix — so we store it as a separate distributed cache instead of maintaining a trie:
 
 - **SQLite (Frequency DB)** - durable `query → count/score`. Never holds suggestion lists.
 - **Redis (Top Suggestions DB)** - `prefix → top-10`, distributed across 3 logical nodes via consistent hashing, with a TTL.
 
-On a cache **miss** we compute the prefix's top-10 from SQLite with an **indexed range scan** (`WHERE query >= :lo AND query < :hi ORDER BY count|score DESC LIMIT 10`) rather than a full augmented trie - this is the demo-scale realisation of Approach 2 and matches the assignment's "use a cache before falling back to the primary data store" (ass.txt:106).
+On a cache **miss** we compute the prefix's top-10 from SQLite with an **indexed range scan** (`WHERE query >= :lo AND query < :hi ORDER BY count|score DESC LIMIT 10`), write it back to the cache, and return it. The cache absorbs repeat reads, satisfying the assignment's "use a cache before falling back to the primary data store".
 
 ---
 
@@ -98,7 +98,7 @@ unzip -o data/amazon-products-dataset-2023-1-4m-products.zip amazon_products.csv
 npm run ingest          # SAMPLE_EVERY=1 keeps all qualifying rows (default)
 ```
 
-`ingest.ts` streams the CSV (`csv-parse`), keeps rows with `reviews > 0`, normalises the title to the canonical `query`, and **aggregates duplicate titles** (counts summed - the assignment's "derive counts by aggregation", ass.txt:33). `score` is seeded equal to `count`.
+`ingest.ts` streams the CSV (`csv-parse`), keeps rows with `reviews > 0`, normalises the title to the canonical `query`, and **aggregates duplicate titles** (counts summed - the assignment's "derive counts by aggregation"). `score` is seeded equal to `count`.
 
 **Result (measured):**
 - Rows read: **1,426,337**
@@ -140,29 +140,29 @@ curl 'http://localhost:3000/cache/debug?prefix=iphone'
 # {"prefix":"iphone","rank":"count","key":"sug:count:iphone","node":"redis-2","status":"HIT","ring":["redis-0","redis-1","redis-2"]}
 ```
 
-**Validation/authz:** inputs are validated (empty/over-`MAX_QUERY_LEN` → 400). The read/search API is **public** (Google's typeahead is public; doc1:182-186 treats auth as an assumed dependency, not part of this design). The operational endpoints (`/batch/flush`, `/decay/run`) would be admin-gated in production.
+**Validation/authz:** inputs are validated (empty/over-`MAX_QUERY_LEN` → 400). The read/search API is **public** (Google's typeahead is public; authentication is an assumed dependency, out of scope for this design). The operational endpoints (`/batch/flush`, `/decay/run`) would be admin-gated in production.
 
 ---
 
 ## 4. Design choices & trade-offs
 
-All NFR reasoning follows doc1:223-321.
+Non-functional requirements drive these choices:
 
-| Decision | Rationale (notes) | Trade-off |
+| Decision | Rationale | Trade-off |
 |---|---|---|
-| **Eventual consistency** | Users don't know/care about true counts; strict order not needed (doc1:260-265). | A query's new count can take until the next flush / TTL to show. Accepted. |
-| **Cache-aside + TTL (300s)** | Read-heavy system → "absorb reads in a cache" (doc1:514-527). Hit ≈ 0.3 ms. | First request per prefix is a slower miss; broad prefixes ("a" → 13,695 rows) sort on miss. Then cached. |
-| **Two stores (SQLite + Redis)** | "data-augmentation == cache" (doc2:97-101). | Cache can be stale vs DB within TTL/flush window - acceptable per NFRs. |
-| **Consistent hashing (150 vnodes)** | Routes prefix→node with minimal remapping when nodes change (doc2:422-431). | More vnodes = better balance, more memory. 150 is a standard middle ground. |
-| **Batch writes** | Avoid 1 DB write + ~10 cache writes per search (doc2:264-280); buffer + aggregate + flush (doc2:464-553). | **Crash before flush loses buffered counts** → counts off by a small amount (acceptable, doc1:305-308). Clean shutdown flushes; prod mitigation = WAL / shorter interval. |
-| **Recency via decay** | `score = 0.9·old + today` (doc2:712-737); old queries fade, fresh ones rise. | Periodic full-table `UPDATE` is O(rows) and synchronous (see §5). Run as a background job at scale. |
+| **Eventual consistency** | Users don't know/care about true counts; strict order not needed. | A query's new count can take until the next flush / TTL to show. Accepted. |
+| **Cache-aside + TTL (300s)** | Read-heavy system → "absorb reads in a cache". Hit ≈ 0.3 ms. | First request per prefix is a slower miss; broad prefixes ("a" → 13,695 rows) sort on miss. Then cached. |
+| **Two stores (SQLite + Redis)** | "data-augmentation == cache". | Cache can be stale vs DB within TTL/flush window - acceptable per NFRs. |
+| **Consistent hashing (150 vnodes)** | Routes prefix→node with minimal remapping when nodes change. | More vnodes = better balance, more memory. 150 is a standard middle ground. |
+| **Batch writes** | Avoid 1 DB write + ~10 cache writes per search; buffer + aggregate + flush. | **Crash before flush loses buffered counts** → counts off by a small amount (acceptable). Clean shutdown flushes; prod mitigation = WAL / shorter interval. |
+| **Recency via decay** | `score = 0.9·old + today`; old queries fade, fresh ones rise. | Periodic full-table `UPDATE` is O(rows) and synchronous (see §5). Run as a background job at scale. |
 | **Prefix range scan, not LIKE `%…%`** | Uses the `query` PK index; avoids the anti-pattern. | Only matches titles that **start with** the prefix (typeahead semantics), not mid-title. |
-| **No index on `score`** | `EXPLAIN QUERY PLAN` shows reads use the `query` PK range + sort; a score index is never used. | Removed it - saves write cost on every search + decay. |
+| **No index on `score`** | The prefix suggest queries filter by the `query` PK range then sort the small matched set, so a `score` index doesn't help **them**. | Dropped to save write cost on every search + decay. Caveat: `GET /trending?rank=recent` does a full scan + top-k sort over all rows — infrequent, small `LIMIT`, so acceptable; add `idx_queries_score` if trending-by-score becomes hot. |
 | **`node:sqlite` + native TS (Node 25)** | Zero native-build dependency; runs `.ts` directly. | Bleeding-edge Node; `node:sqlite` is synchronous (blocks the event loop on big writes - see §5). |
-| **Cache fail-open + command timeout** | "Cache failure must not cascade" (coding guideline §10). | If Redis is down, `/suggest` silently serves from SQLite (slower) instead of erroring. |
-| **Client-side personalization (localStorage)** | "Do personalization purely on the client side; browser merges local + global lists" (doc2:775-784). | Per-device only; not shared. That's the point (privacy + zero backend write). |
+| **Cache fail-open + command timeout** | A cache failure must not cascade into request failures. | If Redis is down, `/suggest` silently serves from SQLite (slower) instead of erroring. |
+| **Client-side personalization (localStorage)** | "Do personalization purely on the client side; browser merges local + global lists". | Per-device only; not shared. That's the point (privacy + zero backend write). |
 
-**Scale note (doc1:374-527):** the notes design for ~10M typeaheads/s, ~160 TB, ~100 Redis servers, where sharding is mandatory. This project is a **local single-machine demo of those patterns**, not their scale; "how would it scale?" → shard more (doc2:456-457).
+**Scale note:** at true scale (≈10M typeaheads/s, ≈160 TB, sharding mandatory) this would run across many sharded cache servers. This project is a **local single-machine demo of the same patterns**; to scale, add more shards.
 
 ---
 
@@ -173,7 +173,7 @@ Measured locally (single machine, single Node process, 3 local Redis instances, 
 ### 5.1 Suggestion latency
 | Path | Latency | Note |
 |---|---|---|
-| Cache **hit** | **~0.28 ms** | served from Redis; well under the notes' <10 ms target (doc1:313) |
+| Cache **hit** | **~0.28 ms** | served from Redis; well under the <10 ms typeahead target |
 | Cache **miss** (compute from SQLite) | **~3.0 ms** | prefix range scan + sort, then cached |
 | Narrow-prefix DB scan | 0.4-2.3 ms | e.g. `iphone` |
 | Broad-prefix miss (`a` → 13,695 rows) | higher (one-off) | sorts the matched set once, then cached |
@@ -186,7 +186,7 @@ Measured locally (single machine, single Node process, 3 local Redis instances, 
 - **Invalidation N+1 fixed:** flush deletes are grouped by owning node → **one variadic `DEL` per node (≤3 commands)** instead of one `DEL` per key.
 
 ### 5.3 Consistent hashing (balance + remap)
-Over 20,000 keys across 3 nodes: ~31.7% / 36.7% / 31.6%. **Adding a 4th node remapped only 22.6%** of keys (ideal ≈ 25%), and **every moved key went to the new node** - proving existing assignments aren't reshuffled. Reproduce: the ring distribution script (see `DESIGN.md §4`).
+Over 20,000 keys across 3 nodes: ~31.7% / 36.7% / 31.6%. **Adding a 4th node remapped only 22.6%** of keys (ideal ≈ 25%), and **every moved key went to the new node** - proving existing assignments aren't reshuffled. Reproduce: `npm test` (`tests/ring.test.ts` asserts the minimal-remap property — a 4th node moves <40% of keys, and only to the new node).
 
 ### 5.4 Batch writes (write reduction)
 - 40 identical searches buffered → **1 aggregated DB write** on flush (40→1).
@@ -200,7 +200,7 @@ Over 20,000 keys across 3 nodes: ~31.7% / 36.7% / 31.6%. **Adding a 4th node rem
 
 ## 6. Testing
 
-`npm test` - 17 tests via Node's built-in `node:test` (no external deps), following the testing-guideline pyramid:
+`npm test` - 17 tests via Node's built-in `node:test` (no external deps), following the standard test pyramid:
 - **Unit:** ring (distribution, determinism, minimal remap, wrap-around), `normalize`, `prefixUpperBound`.
 - **Integration** (in-memory SQLite + injected `InMemoryCacheNode`): cache-aside (miss→set→hit), mixed-case, empty input, rank ordering, **fail-open** (cache errors still return DB results), batch aggregation + dual-rank invalidation, decay order-preservation.
 
@@ -208,24 +208,30 @@ Over 20,000 keys across 3 nodes: ~31.7% / 36.7% / 31.6%. **Adding a 4th node rem
 
 ## 7. How to run
 
+**Docker (recommended)** — one command brings up the app + all 3 Redis nodes:
+```bash
+docker compose up --build    # dashboard + API at http://localhost:3000
+docker compose down          # stop
+```
+The prebuilt `data/typeahead.db` is mounted via a volume, so no ingest step is needed. Only port 3000 is published; the 3 Redis nodes stay internal, and `REDIS_NODES` points the app at the Redis containers. Image: multi-stage `docker/app/Dockerfile` (slim `node:25` base, non-root, healthcheck); orchestration: `docker-compose.yml` (app + redis-0/1/2 with health-gated startup).
+
+**Local (Node 25 + Redis):**
 ```bash
 npm install
 npm run redis:start     # 3 Redis nodes on 6379/6380/6381
 npm run ingest          # load dataset into SQLite (once; see §2)
 npm start               # API + dashboard at http://localhost:3000
-# npm test              # run the test suite
-# npm run redis:stop    # stop the 3 nodes
+npm test                # run the test suite
+npm run redis:stop      # stop the 3 nodes
 ```
 
 ---
 
-## 8. Limitations & future work
-- Prefix matching is title-prefix only (typeahead semantics), not mid-title/fuzzy.
-- Decay is a synchronous full-table update (move to a worker/background job at scale).
-- Single-process demo; the notes' true scale needs many sharded cache servers.
-- Spell-correction (doc2:786-818) and geo-personalization (doc2:755-773) are documented future scope, not implemented.
+## 8. Architecture diagram
 
----
+![Search Typeahead architecture](docs/db/image.png)
 
-## 9. Where to get the architecture diagram as an image
-The ASCII diagram in §1.1 is the source of truth. For the submission's "architecture diagram", it can be redrawn in Excalidraw/draw.io from the same components, or this report rendered to PDF. (Say the word and I can generate an image/HTML version.)
+This mirrors the ASCII overview in §1.1: the browser hits Fastify, which fans out to
+SuggestService (cache-aside read), BatchWriter (buffered writes), and Decayer; the
+distributed Redis cache (consistent-hash ring over redis-0/1/2) fronts the durable SQLite
+Search Frequency DB.

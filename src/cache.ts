@@ -2,15 +2,6 @@ import { Redis } from "ioredis";
 import { HashRing } from "./ring.ts";
 import { CACHE_NODES, CACHE_COMMAND_TIMEOUT_MS } from "./config.ts";
 
-/**
- * Top Suggestions DB (doc2:111) — the distributed CACHE in front of the Frequency DB.
- * Stores `prefix -> top-k suggestions` (JSON).
- *
- * The CacheNode interface keeps the consistent-hashing ring independent of the backend, so the
- * logical nodes can be Redis (prod) or in-memory maps (tests / the assignment's "logical
- * nodes" option) without touching routing logic. DistributedCache takes its nodes by
- * injection, which is what makes the suggest/batch services unit-testable.
- */
 export interface CacheNode {
   id: string;
   get(key: string): Promise<string | null>;
@@ -31,11 +22,11 @@ export class RedisCacheNode implements CacheNode {
       host,
       port,
       lazyConnect: false,
-      commandTimeout: CACHE_COMMAND_TIMEOUT_MS, // fail fast instead of hanging the request
-      enableOfflineQueue: false, // when the node is down, error now rather than queue forever
+      commandTimeout: CACHE_COMMAND_TIMEOUT_MS,
+      enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
     });
-    // Without a listener, ioredis throws unhandled 'error' events when a node is down.
+
     this.client.on("error", () => {});
   }
 
@@ -51,8 +42,7 @@ export class RedisCacheNode implements CacheNode {
     await this.client.del(key);
   }
 
-  /** One variadic DEL command for all keys on this node (Redis DEL is variadic). */
-  async delMany(keys: string[]): Promise<number> {
+    async delMany(keys: string[]): Promise<number> {
     if (keys.length === 0) return 0;
     return this.client.del(...keys);
   }
@@ -66,7 +56,6 @@ export class RedisCacheNode implements CacheNode {
   }
 }
 
-/** In-memory cache node — used by tests (no Redis needed) and usable as a "logical node". */
 export class InMemoryCacheNode implements CacheNode {
   id: string;
   private store: Map<string, { value: string; expireAt: number }> = new Map();
@@ -105,8 +94,8 @@ export class InMemoryCacheNode implements CacheNode {
 }
 
 export interface RoutingInfo {
-  node: string; // which logical node owns this key
-  hit: boolean; // was the key present on that node
+  node: string;
+  hit: boolean;
 }
 
 export class DistributedCache {
@@ -121,8 +110,7 @@ export class DistributedCache {
     );
   }
 
-  /** The logical node responsible for this key, per the consistent-hashing ring. */
-  nodeFor(key: string): CacheNode {
+    nodeFor(key: string): CacheNode {
     return this.byId.get(this.ring.getNode(key))!;
   }
 
@@ -138,9 +126,7 @@ export class DistributedCache {
     await this.nodeFor(key).del(key);
   }
 
-  /** Delete many keys with the fewest round-trips: group by owning node (via the ring),
-   *  then one variadic DEL per node. Turns an N+1 (one DEL per key) into <=#nodes commands. */
-  async delMany(keys: string[]): Promise<number> {
+    async delMany(keys: string[]): Promise<number> {
     if (keys.length === 0) return 0;
     const byNode: Map<string, string[]> = new Map();
     for (const key of keys) {
@@ -155,8 +141,7 @@ export class DistributedCache {
     return counts.reduce((a, b) => a + b, 0);
   }
 
-  /** Backs GET /cache/debug: which node owns the key, and whether it's currently a hit. */
-  async route(key: string): Promise<RoutingInfo> {
+    async route(key: string): Promise<RoutingInfo> {
     const node = this.nodeFor(key);
     const value = await node.get(key);
     return { node: node.id, hit: value !== null };
@@ -166,8 +151,7 @@ export class DistributedCache {
     return this.ring.nodeIds();
   }
 
-  /** Per-node key counts + reachability — powers the Distributed Cache panel. */
-  async nodeStats(): Promise<Array<{ id: string; keys: number; ok: boolean }>> {
+    async nodeStats(): Promise<Array<{ id: string; keys: number; ok: boolean }>> {
     return Promise.all(
       this.ring.nodeIds().map(async (id) => {
         try {
@@ -184,7 +168,6 @@ export class DistributedCache {
   }
 }
 
-/** Production cache: 3 Redis-backed logical nodes (started by scripts/redis-start.sh). */
 export function createRedisCache(): DistributedCache {
   return new DistributedCache(CACHE_NODES.map((c) => new RedisCacheNode(c.id, c.host, c.port)));
 }

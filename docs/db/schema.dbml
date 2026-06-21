@@ -1,7 +1,7 @@
 // Search Typeahead — database schema (DBML)
 // Engine: SQLite (node:sqlite). Render at https://dbdiagram.io
 //
-// This is the "Search Frequency DB" (doc2:108-113): the primary, durable store of
+// This is the "Search Frequency DB": the primary, durable store of
 // query -> count/score. The suggestion lists themselves live in the Redis cache
 // (Top Suggestions DB), not here.
 
@@ -23,9 +23,11 @@ Table queries {
 
   Note: '''
     Indexes: only the PRIMARY KEY on `query` (sqlite_autoindex_queries_1).
-    Deliberately NO index on `score`: EXPLAIN QUERY PLAN shows both rankings filter by the
-    `query` PK range then sort the matched subset, so a score index is never used for reads —
-    it would only add write overhead on every search and every full-table decay step.
+    No index on `score`: the prefix suggest queries filter by the `query` PK range then sort the
+    small matched subset, so a score index does not help them. The global trending query
+    (ORDER BY score DESC LIMIT k, no prefix filter) does a full scan + top-k sort — infrequent and
+    small-LIMIT, so we accept it rather than pay index maintenance on every search + decay; add
+    idx_queries_score if trending-by-score becomes a hotspot.
 
     Deviations from the org schema template, with justification (this is a keyed-count store,
     not a typical entity table):
