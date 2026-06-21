@@ -6,6 +6,7 @@
   "description": "Search Typeahead system (HLD101 assignment) — SQLite frequency DB + Redis prefix cache",
   "scripts": {
     "ingest": "node src/ingest.ts",
+    "test": "node --test tests/*.test.ts",
     "start": "node src/server.ts",
     "dev": "node --watch src/server.ts",
     "redis:start": "./scripts/redis-start.sh",

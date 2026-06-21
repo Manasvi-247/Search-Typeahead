@@ -73,13 +73,22 @@ export class SuggestService {
     const key = cacheKey(prefix, rank);
     const node = this.cache.nodeFor(key);
 
-    const cached = await node.get(key);
-    if (cached !== null) {
-      return { suggestions: JSON.parse(cached), cache: "hit", node: node.id, rank };
+    // Fail-open: a cache error must NOT break suggestions — fall back to the DB (guideline §10).
+    try {
+      const cached = await node.get(key);
+      if (cached !== null) {
+        return { suggestions: JSON.parse(cached), cache: "hit", node: node.id, rank };
+      }
+    } catch (err) {
+      console.error(`[cache] get failed for ${key}, serving from DB:`, (err as Error).message);
     }
 
     const suggestions = this.computeFromDb(prefix, rank);
-    await node.set(key, JSON.stringify(suggestions), CACHE_TTL_SECONDS);
+    try {
+      await node.set(key, JSON.stringify(suggestions), CACHE_TTL_SECONDS);
+    } catch (err) {
+      console.error(`[cache] set failed for ${key}:`, (err as Error).message);
+    }
     return { suggestions, cache: "miss", node: node.id, rank };
   }
 }

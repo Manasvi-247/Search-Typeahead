@@ -1,14 +1,14 @@
 import Fastify from "fastify";
 import { openDb } from "./db.ts";
 import { normalize } from "./normalize.ts";
-import { DistributedCache } from "./cache.ts";
+import { createRedisCache } from "./cache.ts";
 import { SuggestService } from "./suggest.ts";
 import { BatchWriter } from "./batch.ts";
 import { Decayer } from "./decay.ts";
-import { cacheKey, HTTP_PORT, type Rank } from "./config.ts";
+import { cacheKey, HTTP_PORT, MAX_QUERY_LEN, type Rank } from "./config.ts";
 
 const db = openDb();
-const cache = new DistributedCache();
+const cache = createRedisCache();
 const suggestService = new SuggestService(db, cache);
 const batchWriter = new BatchWriter(db, cache);
 batchWriter.start();
@@ -18,21 +18,46 @@ decayer.start();
 /** Parse the ?rank= param; anything but "recent" falls back to the basic "count" ranking. */
 const parseRank = (v: unknown): Rank => (String(v) === "recent" ? "recent" : "count");
 
-const app = Fastify({ logger: false });
+const app = Fastify({ logger: false }); // Fastify auto-assigns req.id (our correlation id)
 
-// CORS for the Vite frontend (added in a later phase).
-app.addHook("onRequest", async (_req, reply) => {
+// CORS for the Vite frontend + echo the correlation id on every response.
+app.addHook("onRequest", async (req, reply) => {
   reply.header("Access-Control-Allow-Origin", "*");
   reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   reply.header("Access-Control-Allow-Headers", "Content-Type");
+  reply.header("x-request-id", req.id);
 });
 app.options("/*", async (_req, reply) => reply.send());
+
+/** Consistent error envelope with a correlation id; internal details aren't leaked (api guideline). */
+app.setErrorHandler((err, req, reply) => {
+  const status = err.statusCode ?? 500;
+  if (status >= 500) console.error(`[${req.id}]`, err);
+  reply.code(status).send({
+    error: {
+      code: err.code ?? (status >= 500 ? "internal_error" : "bad_request"),
+      message: status >= 500 ? "Internal Server Error" : err.message,
+      request_id: req.id,
+    },
+  });
+});
+
+/** Validation helper: reject empty/over-long input with a 400 (api guideline: validate inputs). */
+function requireQuery(value: unknown, field: string): string {
+  const s = String(value ?? "").trim();
+  if (s === "") throw Object.assign(new Error(`${field} is required`), { statusCode: 400 });
+  if (s.length > MAX_QUERY_LEN)
+    throw Object.assign(new Error(`${field} exceeds ${MAX_QUERY_LEN} chars`), { statusCode: 400 });
+  return s;
+}
 
 /** GET /suggest?q=<prefix>&rank=count|recent — top-10 prefix matches, cache-aside.
  *  rank=count (default): all-time popularity. rank=recent: recency-aware trending. */
 app.get("/suggest", async (req) => {
   const query = req.query as Record<string, unknown>;
-  const q = String(query.q ?? "");
+  const q = String(query.q ?? ""); // empty is allowed -> returns [] gracefully (ass.txt:66)
+  if (q.length > MAX_QUERY_LEN)
+    throw Object.assign(new Error(`q exceeds ${MAX_QUERY_LEN} chars`), { statusCode: 400 });
   const rank = parseRank(query.rank);
   const t0 = process.hrtime.bigint();
   const r = await suggestService.suggest(q, rank);
@@ -51,8 +76,7 @@ app.get("/suggest", async (req) => {
 /** GET /cache/debug?prefix=<p>&rank= — which node owns the prefix key, and hit/miss (ass.txt:96). */
 app.get("/cache/debug", async (req) => {
   const query = req.query as Record<string, unknown>;
-  const prefix = normalize(String(query.prefix ?? ""));
-  if (prefix === "") return { error: "prefix is required" };
+  const prefix = normalize(requireQuery(query.prefix, "prefix"));
   const rank = parseRank(query.rank);
   const key = cacheKey(prefix, rank);
   const route = await cache.route(key);
@@ -62,8 +86,8 @@ app.get("/cache/debug", async (req) => {
 /** POST /search — dummy response + buffer the query for a batched count update (ass.txt:69). */
 app.post("/search", async (req) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const query = String(body.query ?? "");
-  if (query.trim() !== "") batchWriter.record(query);
+  const query = requireQuery(body.query, "query");
+  batchWriter.record(query);
   return { message: "Searched", query };
 });
 

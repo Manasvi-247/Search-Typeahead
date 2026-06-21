@@ -1,5 +1,6 @@
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { normalize } from "./normalize.ts";
+import { UPSERT_QUERY_SQL } from "./db.ts";
 import { DistributedCache } from "./cache.ts";
 import {
   cacheKey,
@@ -57,15 +58,7 @@ export class BatchWriter {
   constructor(db: DatabaseSync, cache: DistributedCache) {
     this.db = db;
     this.cache = cache;
-    // A search bumps BOTH all-time count and the recency score by the same delta
-    // ("today's count" added to the decayed score, doc2:713-715).
-    this.upsert = db.prepare(
-      `INSERT INTO queries (query, display, count, score)
-       VALUES (:query, :display, :count, :count)
-       ON CONFLICT(query) DO UPDATE SET
-         count = count + excluded.count,
-         score = score + excluded.count`
-    );
+    this.upsert = db.prepare(UPSERT_QUERY_SQL);
   }
 
   /** Buffer one search. Aggregates repeats. No DB write here (that's the point). */
@@ -109,25 +102,26 @@ export class BatchWriter {
       this.db.exec("COMMIT");
 
       // (2) Invalidate the cached suggestion lists for every affected prefix.
-      const deletes: Array<Promise<void>> = [];
+      // Build a DEDUPED key set (prefixes overlap across queries), then hand it to
+      // delMany, which issues one variadic DEL per node — not one DEL per key (N+1).
+      const keys: Set<string> = new Set();
       for (const query of snapshot.keys()) {
         const cap = Math.min(query.length, PREFIX_INVALIDATION_CAP);
         for (let i = MIN_PREFIX; i <= cap; i++) {
           const prefix = query.slice(0, i);
           if (prefix.endsWith(" ")) continue; // never a real normalized cache key
-          // Both rankings' cached lists for this prefix may now be stale.
-          for (const rank of RANKS) deletes.push(this.cache.del(cacheKey(prefix, rank)));
+          for (const rank of RANKS) keys.add(cacheKey(prefix, rank)); // both rankings stale
         }
       }
-      await Promise.all(deletes);
+      await this.cache.delMany([...keys]);
 
       this.flushes += 1;
       this.totalEvents += events;
       this.totalDbWrites += snapshot.size;
-      this.totalInvalidations += deletes.length;
+      this.totalInvalidations += keys.size;
       console.log(
         `[batch] flush(${reason}): events=${events} dbWrites=${snapshot.size} ` +
-          `invalidations=${deletes.length} (reduction ${events}->${snapshot.size})`
+          `invalidations=${keys.size} (reduction ${events}->${snapshot.size})`
       );
     } catch (err) {
       console.error("[batch] flush failed:", err);

@@ -16,9 +16,16 @@ export const CACHE_NODES: NodeConfig[] = [
 /** Max suggestions returned (assignment: at most 10). */
 export const SUGGEST_LIMIT = 10;
 
+/** Reject absurdly long input (doc1:156 assumes a 50-char query cap; we allow some slack). */
+export const MAX_QUERY_LEN = Number(process.env.MAX_QUERY_LEN ?? 100);
+
 /** Cache entry TTL. Satisfies "cache should support expiry" (ass.txt:108) and bounds how
  *  stale a suggestion list can be after counts change (eventual consistency, doc1:260-265). */
 export const CACHE_TTL_SECONDS = Number(process.env.CACHE_TTL_SECONDS ?? 300);
+
+/** Per-command Redis timeout. Cache must not cascade failures: a slow/down node should error
+ *  fast so the suggest path can fail-open to the DB (coding guideline §10). */
+export const CACHE_COMMAND_TIMEOUT_MS = Number(process.env.CACHE_COMMAND_TIMEOUT_MS ?? 100);
 
 /** Ranking modes: "count" = all-time popularity (basic, 60%); "recent" = recency-aware
  *  decayed score (trending, 20%). The same /suggest API serves both (ass.txt:124). */

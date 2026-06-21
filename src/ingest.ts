@@ -18,7 +18,7 @@
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 import { parse } from "csv-parse";
-import { openDb, initSchema } from "./db.ts";
+import { openDb, initSchema, UPSERT_QUERY_SQL } from "./db.ts";
 import { normalize } from "./normalize.ts";
 
 const CSV_PATH =
@@ -37,15 +37,9 @@ async function main() {
   initSchema(db);
   db.exec("DELETE FROM queries;"); // fresh load each run, so re-running is deterministic
 
-  // Seed score = count: at load time, "recent" popularity equals all-time popularity.
-  // The two diverge once live searches + decay kick in.
-  const upsert = db.prepare(
-    `INSERT INTO queries (query, display, count, score)
-     VALUES (:query, :display, :count, :count)
-     ON CONFLICT(query) DO UPDATE SET
-       count = count + excluded.count,
-       score = score + excluded.count`
-  );
+  // Seed score = count (shared UPSERT): at load time "recent" popularity equals all-time
+  // popularity; the two diverge once live searches + decay kick in.
+  const upsert = db.prepare(UPSERT_QUERY_SQL);
 
   const parser = createReadStream(CSV_PATH).pipe(
     parse({
