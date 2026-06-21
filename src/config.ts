@@ -6,12 +6,27 @@ export interface NodeConfig {
   port: number;
 }
 
-/** The 3 logical Redis cache nodes (started by scripts/redis-start.sh). */
-export const CACHE_NODES: NodeConfig[] = [
-  { id: "redis-0", host: "127.0.0.1", port: 6379 },
-  { id: "redis-1", host: "127.0.0.1", port: 6380 },
-  { id: "redis-2", host: "127.0.0.1", port: 6381 },
-];
+/**
+ * The logical Redis cache nodes. Defaults to 3 instances on localhost (the brew/dev setup).
+ * In Docker, set REDIS_NODES="redis-0:6379,redis-1:6379,redis-2:6379" so the app reaches the
+ * Redis *containers* by service name instead of 127.0.0.1.
+ */
+function loadCacheNodes(): NodeConfig[] {
+  const raw = process.env.REDIS_NODES?.trim();
+  if (raw) {
+    return raw.split(",").map((entry, i) => {
+      const [host, port] = entry.trim().split(":");
+      return { id: `redis-${i}`, host, port: Number(port ?? 6379) };
+    });
+  }
+  return [
+    { id: "redis-0", host: "127.0.0.1", port: 6379 },
+    { id: "redis-1", host: "127.0.0.1", port: 6380 },
+    { id: "redis-2", host: "127.0.0.1", port: 6381 },
+  ];
+}
+
+export const CACHE_NODES: NodeConfig[] = loadCacheNodes();
 
 /** Max suggestions returned (assignment: at most 10). */
 export const SUGGEST_LIMIT = 10;

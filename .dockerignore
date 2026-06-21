@@ -1,0 +1,22 @@
+# Keep the build context lean (and the image small)
+.git
+.gitignore
+node_modules
+data
+dist
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+npm-debug.log*
+
+# Not needed at runtime
+tests
+scripts
+docs
+guidelines
+Interactive color palette design (1)
+*.md
+*.txt
+tsconfig.json
+.claude
