@@ -50,11 +50,13 @@ docker compose up --build
 docker compose down
 ```
 
-That's it - the prebuilt database in `data/typeahead.db` is mounted automatically, so **no
-ingestion step is needed**. (Only publishes port 3000; the 3 Redis nodes stay internal.)
+If `data/typeahead.db` already exists it's mounted automatically and serves immediately.
+(Only publishes port 3000; the 3 Redis nodes stay internal.)
 
-> **Fresh machine with no `data/typeahead.db`?** Load the dataset first (see [Dataset](#dataset)),
-> then `docker compose up --build`.
+> **Fresh clone?** `data/` is git-ignored, so there's no DB yet - load the dataset once first
+> (see [Dataset](#dataset)): `docker compose run --rm app npm run ingest`. The server
+> self-initialises the schema, so it starts even on an empty DB - it just returns no results
+> until ingest runs.
 
 ### Option B - Local (Node + Redis)
 

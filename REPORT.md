@@ -186,7 +186,7 @@ Measured locally (single machine, single Node process, 3 local Redis instances, 
 - **Invalidation N+1 fixed:** flush deletes are grouped by owning node → **one variadic `DEL` per node (≤3 commands)** instead of one `DEL` per key.
 
 ### 5.3 Consistent hashing (balance + remap)
-Over 20,000 keys across 3 nodes: ~31.7% / 36.7% / 31.6%. **Adding a 4th node remapped only 22.6%** of keys (ideal ≈ 25%), and **every moved key went to the new node** - proving existing assignments aren't reshuffled. Reproduce: `npm test` (`tests/ring.test.ts` asserts the minimal-remap property — a 4th node moves <40% of keys, and only to the new node).
+A one-off measurement over 20,000 keys across 3 nodes: ~31.7% / 36.7% / 31.6%. **Adding a 4th node remapped only 22.6%** of keys (theory ≈ 1/4), and **every moved key went to the new node** - existing assignments aren't reshuffled. Reproduce the figures with `npm run ring:stats`; the property itself (a 4th node moves <40% of keys, and only to the new node) is asserted by `npm test` (`tests/ring.test.ts`).
 
 ### 5.4 Batch writes (write reduction)
 - 40 identical searches buffered → **1 aggregated DB write** on flush (40→1).
@@ -208,12 +208,14 @@ Over 20,000 keys across 3 nodes: ~31.7% / 36.7% / 31.6%. **Adding a 4th node rem
 
 ## 7. How to run
 
-**Docker (recommended)** — one command brings up the app + all 3 Redis nodes:
+**Docker (recommended)** - brings up the app + all 3 Redis nodes:
 ```bash
+# data/ is git-ignored, so a fresh clone has no DB - load it once first (see §2):
+docker compose run --rm app npm run ingest
 docker compose up --build    # dashboard + API at http://localhost:3000
 docker compose down          # stop
 ```
-The prebuilt `data/typeahead.db` is mounted via a volume, so no ingest step is needed. Only port 3000 is published; the 3 Redis nodes stay internal, and `REDIS_NODES` points the app at the Redis containers. Image: multi-stage `docker/app/Dockerfile` (slim `node:25` base, non-root, healthcheck); orchestration: `docker-compose.yml` (app + redis-0/1/2 with health-gated startup).
+`data/typeahead.db` is mounted via a volume. The server self-initialises the schema, so it starts even against an empty DB - it just returns no suggestions until the ingest above has run. Only port 3000 is published; the 3 Redis nodes stay internal, and `REDIS_NODES` points the app at the Redis containers. Image: multi-stage `docker/app/Dockerfile` (slim `node:25` base, non-root, healthcheck); orchestration: `docker-compose.yml` (app + redis-0/1/2 with health-gated startup).
 
 **Local (Node 25 + Redis):**
 ```bash

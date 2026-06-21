@@ -7,6 +7,7 @@
   "scripts": {
     "ingest": "node src/ingest.ts",
     "test": "node --test tests/*.test.ts",
+    "ring:stats": "node scripts/ring-stats.ts",
     "start": "node src/server.ts",
     "dev": "node --watch src/server.ts",
     "redis:start": "./scripts/redis-start.sh",

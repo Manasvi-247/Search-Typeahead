@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { openDb } from "./db.ts";
+import { openDb, initSchema } from "./db.ts";
 import { normalize } from "./normalize.ts";
 import { createRedisCache } from "./cache.ts";
 import { SuggestService } from "./suggest.ts";
@@ -10,6 +10,7 @@ import { Decayer } from "./decay.ts";
 import { cacheKey, HTTP_PORT, MAX_QUERY_LEN, CACHE_TTL_SECONDS, type Rank } from "./config.ts";
 
 const db = openDb();
+initSchema(db);
 const cache = createRedisCache();
 const suggestService = new SuggestService(db, cache);
 const batchWriter = new BatchWriter(db, cache);
