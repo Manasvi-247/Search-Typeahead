@@ -1,0 +1,19 @@
+{
+  "name": "search-typeahead",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Search Typeahead system (HLD101 assignment) — SQLite frequency DB + Redis prefix cache",
+  "scripts": {
+    "ingest": "node src/ingest.ts",
+    "start": "node src/server.ts",
+    "dev": "node --watch src/server.ts",
+    "redis:start": "./scripts/redis-start.sh",
+    "redis:stop": "./scripts/redis-stop.sh"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "fastify": "^5.8.5",
+    "ioredis": "^5.11.1"
+  }
+}
