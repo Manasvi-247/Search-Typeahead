@@ -13,6 +13,7 @@
     "redis:stop": "./scripts/redis-stop.sh"
   },
   "dependencies": {
+    "@fastify/static": "^9.1.3",
     "csv-parse": "^5.5.6",
     "fastify": "^5.8.5",
     "ioredis": "^5.11.1"

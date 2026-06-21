@@ -1,11 +1,13 @@
+import { join } from "node:path";
 import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
 import { openDb } from "./db.ts";
 import { normalize } from "./normalize.ts";
 import { createRedisCache } from "./cache.ts";
 import { SuggestService } from "./suggest.ts";
 import { BatchWriter } from "./batch.ts";
 import { Decayer } from "./decay.ts";
-import { cacheKey, HTTP_PORT, MAX_QUERY_LEN, type Rank } from "./config.ts";
+import { cacheKey, HTTP_PORT, MAX_QUERY_LEN, CACHE_TTL_SECONDS, type Rank } from "./config.ts";
 
 const db = openDb();
 const cache = createRedisCache();
@@ -91,6 +93,20 @@ app.post("/search", async (req) => {
   return { message: "Searched", query };
 });
 
+/** GET /trending?rank=count|recent&limit= — global top-N for the Trending panel (ass.txt:152). */
+app.get("/trending", async (req) => {
+  const query = req.query as Record<string, unknown>;
+  const rank = parseRank(query.rank);
+  const limit = Math.min(Math.max(Number(query.limit ?? 6) || 6, 1), 50);
+  return { rank, suggestions: suggestService.trending(rank, limit) };
+});
+
+/** GET /cache/stats — hit rate + per-node key counts for the Distributed Cache panel. */
+app.get("/cache/stats", async () => {
+  const nodes = await cache.nodeStats();
+  return { ...suggestService.cacheStats(), datasetSize: suggestService.datasetSize(), ttl: CACHE_TTL_SECONDS, nodes };
+});
+
 /** GET /batch/stats — write-reduction evidence for the performance report (ass.txt:145). */
 app.get("/batch/stats", async () => batchWriter.stats());
 
@@ -111,13 +127,18 @@ app.get("/decay/stats", async () => decayer.stats());
 
 app.get("/health", async () => ({ ok: true }));
 
-/** GET / — index of available endpoints (so hitting the root isn't a confusing 404). */
-app.get("/", async () => ({
+// Serve the dashboard SPA from web/ at the root. Explicit API routes above take precedence.
+app.register(fastifyStatic, { root: join(import.meta.dirname, "..", "web"), prefix: "/" });
+
+/** GET /api — index of available endpoints. */
+app.get("/api", async () => ({
   service: "search-typeahead",
   endpoints: {
     "GET /suggest?q=<prefix>&rank=count|recent": "top-10 suggestions (cache-aside)",
     "POST /search {query}": "dummy response + buffer query for batched count update",
     "GET /cache/debug?prefix=<p>&rank=": "which Redis node owns the prefix + hit/miss",
+    "GET /trending?rank=count|recent&limit=": "global top-N suggestions",
+    "GET /cache/stats": "cache hit rate + per-node key counts",
     "GET /batch/stats": "write-reduction evidence",
     "POST /batch/flush": "force a batch flush now",
     "GET /decay/stats": "trending decay factor/interval/steps",

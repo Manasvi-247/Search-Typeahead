@@ -40,18 +40,44 @@ export class SuggestService {
   // One prepared statement per ranking mode (the ORDER BY column can't be bound as a param).
   private byCount: StatementSync;
   private byScore: StatementSync;
+  private globalByCount: StatementSync; // global top-N (no prefix) for the trending panel
+  private globalByScore: StatementSync;
+  private countStmt: StatementSync;
+  private hits = 0;
+  private misses = 0;
 
   constructor(db: DatabaseSync, cache: DistributedCache) {
     this.cache = cache;
-    const base = (orderCol: string) =>
+    const prefixed = (orderCol: string) =>
       db.prepare(
         `SELECT display, count, score FROM queries
          WHERE query >= :lo AND query < :hi
          ORDER BY ${orderCol} DESC
          LIMIT :k`
       );
-    this.byCount = base("count"); // basic ranking (60%)
-    this.byScore = base("score"); // recency-aware ranking (20%)
+    this.byCount = prefixed("count"); // basic ranking (60%)
+    this.byScore = prefixed("score"); // recency-aware ranking (20%)
+    this.globalByCount = db.prepare(`SELECT display, count, score FROM queries ORDER BY count DESC LIMIT :k`);
+    this.globalByScore = db.prepare(`SELECT display, count, score FROM queries ORDER BY score DESC LIMIT :k`);
+    this.countStmt = db.prepare(`SELECT COUNT(*) AS n FROM queries`);
+  }
+
+  /** Total number of queries loaded — shown in the header. */
+  datasetSize(): number {
+    return (this.countStmt.get() as { n: number }).n;
+  }
+
+  /** Global top-N (no prefix) — powers the "Trending now" panel (ass.txt:152). */
+  trending(rank: Rank, limit: number): Suggestion[] {
+    const stmt = rank === "recent" ? this.globalByScore : this.globalByCount;
+    const rows = stmt.all({ k: limit }) as Array<{ display: string; count: number; score: number }>;
+    return rows.map((r) => ({ query: r.display, count: r.count, score: r.score }));
+  }
+
+  /** Cumulative cache hit/miss counters for the cache panel + perf report (ass.txt:160). */
+  cacheStats(): { hits: number; misses: number; hitRate: number } {
+    const total = this.hits + this.misses;
+    return { hits: this.hits, misses: this.misses, hitRate: total ? Math.round((this.hits / total) * 100) : 0 };
   }
 
   /** Compute top-k for a (normalized, non-empty) prefix directly from the Frequency DB. */
@@ -77,12 +103,14 @@ export class SuggestService {
     try {
       const cached = await node.get(key);
       if (cached !== null) {
+        this.hits++;
         return { suggestions: JSON.parse(cached), cache: "hit", node: node.id, rank };
       }
     } catch (err) {
       console.error(`[cache] get failed for ${key}, serving from DB:`, (err as Error).message);
     }
 
+    this.misses++;
     const suggestions = this.computeFromDb(prefix, rank);
     try {
       await node.set(key, JSON.stringify(suggestions), CACHE_TTL_SECONDS);

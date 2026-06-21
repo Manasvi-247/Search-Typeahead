@@ -38,6 +38,10 @@ export interface BatchStats {
   totalInvalidations: number;
   pendingEvents: number; // currently buffered, not yet flushed
   pendingQueries: number;
+  pending: Array<{ q: string; n: number }>; // buffered queries + counts (for the UI)
+  writesSavedPct: number; // 1 - dbWrites/events, as a percentage
+  batchSize: number; // flush threshold (events)
+  flushIntervalSec: number;
 }
 
 export class BatchWriter {
@@ -138,6 +142,11 @@ export class BatchWriter {
       totalInvalidations: this.totalInvalidations,
       pendingEvents: this.pendingEvents,
       pendingQueries: this.buffer.size,
+      pending: [...this.buffer.entries()].map(([q, p]) => ({ q, n: p.delta })),
+      writesSavedPct:
+        this.totalEvents > 0 ? Math.round((1 - this.totalDbWrites / this.totalEvents) * 100) : 0,
+      batchSize: BATCH_SIZE,
+      flushIntervalSec: Math.round(FLUSH_INTERVAL_MS / 1000),
     };
   }
 }

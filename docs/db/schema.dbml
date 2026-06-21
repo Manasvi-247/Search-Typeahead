@@ -1,0 +1,37 @@
+// Search Typeahead — database schema (DBML)
+// Engine: SQLite (node:sqlite). Render at https://dbdiagram.io
+//
+// This is the "Search Frequency DB" (doc2:108-113): the primary, durable store of
+// query -> count/score. The suggestion lists themselves live in the Redis cache
+// (Top Suggestions DB), not here.
+
+Project search_typeahead {
+  database_type: 'SQLite'
+  Note: '''
+    Single keyed-count store. Suggestions are computed from this table on a cache miss
+    (prefix range scan) and served from Redis. Access patterns drove the design:
+      - prefix lookup:  WHERE query >= :lo AND query < :hi   (uses the `query` PK index)
+      - top-k ordering: ORDER BY count|score DESC LIMIT 10   (sorts the matched subset)
+  '''
+}
+
+Table queries {
+  query   text     [pk, note: 'normalized search query: lowercased, trimmed, single-spaced. NATURAL KEY — there is no surrogate id/UUID because the prefix range scan depends on this column being the primary (ordered) key.']
+  display text     [not null, note: 'original product title, shown to the user']
+  count   integer  [not null, note: 'all-time popularity — basic ranking (60%). Seeded from the dataset review count; incremented per search via batched UPSERT.']
+  score   double   [not null, note: 'recency-decayed popularity — trending ranking (20%). Float per schema guideline (score columns are float). Incremented per search, multiplied down each decay step.']
+
+  Note: '''
+    Indexes: only the PRIMARY KEY on `query` (sqlite_autoindex_queries_1).
+    Deliberately NO index on `score`: EXPLAIN QUERY PLAN shows both rankings filter by the
+    `query` PK range then sort the matched subset, so a score index is never used for reads —
+    it would only add write overhead on every search and every full-table decay step.
+
+    Deviations from the org schema template, with justification (this is a keyed-count store,
+    not a typical entity table):
+      - PK is `query` (text natural key), not `id` UUID — required for prefix range scans.
+      - No created_at / updated_at / deleted_at — no soft-delete or audit use case here;
+        rows are seeded in bulk and only their counts mutate.
+      - No polymorphic associations / foreign keys — single standalone table.
+  '''
+}

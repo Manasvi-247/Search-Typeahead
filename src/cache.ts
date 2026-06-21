@@ -17,6 +17,7 @@ export interface CacheNode {
   set(key: string, value: string, ttlSeconds: number): Promise<void>;
   del(key: string): Promise<void>;
   delMany(keys: string[]): Promise<number>;
+  size(): Promise<number>;
   close?(): Promise<void>;
 }
 
@@ -56,6 +57,10 @@ export class RedisCacheNode implements CacheNode {
     return this.client.del(...keys);
   }
 
+  size(): Promise<number> {
+    return this.client.dbsize();
+  }
+
   async close(): Promise<void> {
     await this.client.quit();
   }
@@ -92,6 +97,10 @@ export class InMemoryCacheNode implements CacheNode {
     let n = 0;
     for (const k of keys) if (this.store.delete(k)) n++;
     return n;
+  }
+
+  async size(): Promise<number> {
+    return this.store.size;
   }
 }
 
@@ -155,6 +164,19 @@ export class DistributedCache {
 
   ringIds(): string[] {
     return this.ring.nodeIds();
+  }
+
+  /** Per-node key counts + reachability — powers the Distributed Cache panel. */
+  async nodeStats(): Promise<Array<{ id: string; keys: number; ok: boolean }>> {
+    return Promise.all(
+      this.ring.nodeIds().map(async (id) => {
+        try {
+          return { id, keys: await this.byId.get(id)!.size(), ok: true };
+        } catch {
+          return { id, keys: 0, ok: false };
+        }
+      })
+    );
   }
 
   async close(): Promise<void> {
